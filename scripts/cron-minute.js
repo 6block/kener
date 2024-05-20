@@ -141,7 +141,20 @@ const pingCall = async (hostsV4, hostsV6) => {
 		type: "realtime"
 	};
 }
-const apiCall = async (envSecrets, url, method, headers, body, timeout, monitorEval) => {
+const larkWebHook = process.env.LARK_HOOK;
+const sendLark = async (name) => {
+	const message = `节点同步落后超过5分钟: ${name}`;
+	const data = {
+		msg_type: 'text',
+		content: {
+		  text: message,
+		},
+	  }
+	try {
+		const _res = await axios.post(larkWebHook, data);
+	}catch (e) {}
+}
+const apiCall = async (envSecrets, name, url, method, headers, body, timeout, monitorEval) => {
 	let axiosHeaders = {};
 	axiosHeaders["User-Agent"] = "Kener/0.0.1";
 	axiosHeaders["Accept"] = "*/*";
@@ -176,14 +189,36 @@ const apiCall = async (envSecrets, url, method, headers, body, timeout, monitorE
 	if (!!body) {
 		options.data = body;
 	}
+	const reqData = {
+		jsonrpc: "2.0",
+		method: "chain_getBlock",
+		params: [],
+		id: 1
+	};
+	const customConfig = {
+		headers: {
+			"Content-Type": "application/json"
+		}
+	};
 	let statusCode = 500;
 	let latency = 0;
 	let resp = "";
 	let timeoutError = false;
+	let syncError = false;
 	try {
-		let data = await axios(url, options);
+		let data = await axios.post(url, JSON.stringify(reqData), customConfig);
+		const blockNum = Number(data.data.result.block.header.number);
+		const explorer = await axios.post(
+			"https://subspace.webapi.subscan.io/api/scan/block",
+			{
+				block_num: blockNum - 3,
+				only_head: true
+			},
+			customConfig
+		);
+		syncError = Date.now() / 1000 - Number(explorer.data.data.block_timestamp) > 300;
 		statusCode = data.status;
-		resp = data.data;
+		resp = "Hello World";
 	} catch (err) {
 		if (err.message.startsWith("timeout of") && err.message.endsWith("exceeded")) {
 			timeoutError = true;
@@ -237,6 +272,15 @@ const apiCall = async (envSecrets, url, method, headers, body, timeout, monitorE
 	}
 	if (timeoutError) {
 		toWrite.type = "timeout";
+	}
+
+	if (syncError) {
+		toWrite.status = DOWN;
+		toWrite.type = "syncing";
+		await sendLark(name);
+	} else {
+		// ignore subscan explorer api error
+		toWrite.status = UP;
 	}
 
 	return toWrite;
@@ -305,6 +349,7 @@ const Minuter = async (envSecrets, monitor, githubConfig) => {
 	if (monitor.hasAPI) {
 		let apiResponse = await apiCall(
 			envSecrets,
+			monitor.name,
 			monitor.api.url,
 			monitor.api.method,
 			JSON.stringify(monitor.api.headers),
@@ -321,6 +366,7 @@ const Minuter = async (envSecrets, monitor, githubConfig) => {
 			apiQueue.push(async (cb) => {
 				apiCall(
 					envSecrets,
+					monitor.name,
 					monitor.api.url,
 					monitor.api.method,
 					JSON.stringify(monitor.api.headers),
@@ -345,7 +391,7 @@ const Minuter = async (envSecrets, monitor, githubConfig) => {
 		let pingResponse = await pingCall(monitor.ping.hostsV4, monitor.ping.hostsV6);
 		pingData[startOfMinute] = pingResponse;
 	}
-		
+
 	webhookData = await getWebhookData(monitor);
 	manualData = await manualIncident(monitor, githubConfig);
 	//merge noData, apiData, webhookData, dayData
