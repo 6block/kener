@@ -10,6 +10,7 @@ import {
 import { GetIncidents, GetEndTimeFromBody, GetStartTimeFromBody, CloseIssue } from "./github.js";
 import Randomstring from "randomstring";
 import Queue from "queue";
+import { ApiPromise, WsProvider } from '@polkadot/api';
 
 const Kener_folder = process.env.PUBLIC_KENER_FOLDER;
 const apiQueue = new Queue({
@@ -155,6 +156,8 @@ const sendLark = async (name) => {
 	}catch (e) {}
 }
 const apiCall = async (envSecrets, name, url, method, headers, body, timeout, monitorEval) => {
+	const wsProvider = new WsProvider(url);
+	const api = await ApiPromise.create({ provider: wsProvider });
 	let axiosHeaders = {};
 	axiosHeaders["User-Agent"] = "Kener/0.0.1";
 	axiosHeaders["Accept"] = "*/*";
@@ -206,17 +209,9 @@ const apiCall = async (envSecrets, name, url, method, headers, body, timeout, mo
 	let timeoutError = false;
 	let syncError = false;
 	try {
-		let data = await axios.post(url, JSON.stringify(reqData), customConfig);
-		const blockNum = Number(data.data.result.block.header.number);
-		const explorer = await axios.post(
-			"https://subspace.webapi.subscan.io/api/scan/block",
-			{
-				block_num: blockNum - 3,
-				only_head: true
-			},
-			customConfig
-		);
-		syncError = Date.now() / 1000 - Number(explorer.data.data.block_timestamp) > 300;
+		const signedBlock = await api.rpc.chain.getBlock();
+		const timestamp = await api.query.timestamp.now.at(signedBlock.block.header.parentHash);
+		syncError = Date.now() - timestamp.toNumber() > 300 * 1000;
 		statusCode = data.status;
 		resp = "Hello World";
 	} catch (err) {
@@ -278,9 +273,6 @@ const apiCall = async (envSecrets, name, url, method, headers, body, timeout, mo
 		toWrite.status = DOWN;
 		toWrite.type = "syncing";
 		await sendLark(name);
-	} else {
-		// ignore subscan explorer api error
-		toWrite.status = UP;
 	}
 
 	return toWrite;
